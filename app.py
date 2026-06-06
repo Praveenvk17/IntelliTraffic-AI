@@ -327,10 +327,35 @@ def create_pdf(df):
 st.sidebar.title("🚦 IntelliTraffic AI")
 st.sidebar.success(f"{st.session_state.role} Mode")
 
-menu = st.sidebar.radio(
-    "Navigation",
-    ["Dashboard", "Camera Analysis", "Multi-Camera", "Live RTSP/CCTV", "Map View", "Reports", "Feedback"]
-)
+role = st.session_state.role
+
+ROLE_MENUS = {
+    "Admin": [
+        "📊 Dashboard",
+        "📷 Camera Analysis",
+        "🎥 Multi-Camera",
+        "📡 Live RTSP/CCTV",
+        "🗺️ Map View",
+        "📋 Reports",
+        "⭐ Feedback"
+    ],
+    "Officer": [
+        "📊 Dashboard",
+        "📷 Camera Analysis",
+        "🎥 Multi-Camera",
+        "📋 Reports",
+        "⭐ Feedback"
+    ],
+    "Viewer": [
+        "📊 Dashboard",
+        "🗺️ Map View",
+        "⭐ Feedback"
+    ]
+}
+
+menu = st.sidebar.radio("Navigation", ROLE_MENUS[role])
+
+menu = menu.split(" ", 1)[1]
 
 conf = st.sidebar.slider("YOLO Confidence", 0.10, 0.90, 0.35, 0.05)
 frame_skip = st.sidebar.slider("Video Frame Skip", 1, 15, 5)
