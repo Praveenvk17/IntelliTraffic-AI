@@ -8,4 +8,7 @@ fpdf2
 folium
 streamlit-folium
 Pillow
+matplotlib
 openpyxl
+plotly
+requests
