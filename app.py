@@ -1,6 +1,6 @@
 import streamlit as st
 from ultralytics import YOLO
-import cv2, sqlite3, tempfile, os, random, json, time
+import cv2, sqlite3, tempfile, random, json
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -8,13 +8,10 @@ from sklearn.linear_model import LinearRegression
 from fpdf import FPDF
 import folium
 from streamlit_folium import st_folium
+import matplotlib.pyplot as plt
 
 # ================= CONFIG =================
-st.set_page_config(
-    page_title="IntelliTraffic AI",
-    page_icon="🚦",
-    layout="wide"
-)
+st.set_page_config(page_title="IntelliTraffic AI", page_icon="🚦", layout="wide")
 
 DB = "intellitraffic_ai.db"
 VEHICLES = ["car", "bus", "truck", "motorcycle", "bicycle"]
@@ -110,10 +107,39 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS app_users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE,
+        role TEXT,
+        status TEXT,
+        created_at TEXT
+    )
+    """)
+
+    con.commit()
+    con.close()
+
+def init_default_users():
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+
+    for username, data in USERS.items():
+        cur.execute("""
+        INSERT OR IGNORE INTO app_users(username, role, status, created_at)
+        VALUES(?,?,?,?)
+        """, (
+            username,
+            data["role"],
+            "Active",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ))
+
     con.commit()
     con.close()
 
 init_db()
+init_default_users()
 
 def save_report(row):
     con = sqlite3.connect(DB)
@@ -144,29 +170,87 @@ def read_table(table):
     con.close()
     return df
 
+def add_user(username, role):
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    try:
+        cur.execute("""
+        INSERT INTO app_users(username, role, status, created_at)
+        VALUES(?,?,?,?)
+        """, (
+            username,
+            role,
+            "Active",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ))
+        con.commit()
+        st.success("User added successfully.")
+    except sqlite3.IntegrityError:
+        st.error("Username already exists.")
+    con.close()
+
+def update_user_status(username, status):
+    con = sqlite3.connect(DB)
+    cur = con.cursor()
+    cur.execute("UPDATE app_users SET status=? WHERE username=?", (status, username))
+    con.commit()
+    con.close()
+    st.success("User status updated.")
+
 # ================= AUTH =================
 def login_page():
     st.markdown('<div class="main-title">🚦 IntelliTraffic AI</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Premium Smart Traffic Monitoring & Signal Optimization Platform</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-title">Premium Smart Traffic Monitoring & Signal Optimization Platform</div>',
+        unsafe_allow_html=True
+    )
     st.write("")
 
-    c1, c2, c3 = st.columns([1, 1.2, 1])
-    with c2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        user = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+    c1, c2, c3 = st.columns([1, 1.3, 1])
 
-        if st.button("Login"):
+    with c2:
+        st.markdown("""
+        <div style="
+            background: rgba(10,10,10,0.88);
+            border: 2px solid #facc15;
+            border-radius: 24px;
+            padding: 28px;
+            box-shadow: 0 0 28px rgba(250,204,21,0.35);
+        ">
+            <div style="
+                text-align:center;
+                background: linear-gradient(90deg,#991b1b,#facc15);
+                padding: 12px;
+                border-radius: 16px;
+                font-weight: 900;
+                color: black;
+                margin-bottom: 18px;
+            ">
+                🏆 AI Powered Smart Traffic Management System
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        user = st.text_input("👤 Username")
+        password = st.text_input("🔒 Password", type="password")
+
+        if st.button("🚀 Login"):
             if user in USERS and USERS[user]["password"] == password:
-                st.session_state.logged = True
-                st.session_state.user = user
-                st.session_state.role = USERS[user]["role"]
-                st.rerun()
+                users_df = read_table("app_users")
+                user_row = users_df[users_df["username"] == user]
+
+                if not user_row.empty and user_row.iloc[0]["status"] != "Active":
+                    st.error("This user is disabled by admin.")
+                else:
+                    st.session_state.logged = True
+                    st.session_state.user = user
+                    st.session_state.role = USERS[user]["role"]
+                    st.rerun()
             else:
                 st.error("Invalid username or password")
 
         st.info("Demo Login: admin/admin123 | officer/officer123 | viewer/viewer123")
-        st.markdown('</div>', unsafe_allow_html=True)
+       
 
 if "logged" not in st.session_state:
     st.session_state.logged = False
@@ -232,7 +316,10 @@ def demo_plate():
     return f"TN-{random.randint(10,99)}-AI-{random.randint(1000,9999)}"
 
 def analyze_frame(frame, conf):
-    results = model(frame, conf=conf)
+    if frame is None:
+        return frame, {v: 0 for v in VEHICLES}, 0, False
+
+    results = model.predict(frame, conf=conf, verbose=False)
     stats = {v: 0 for v in VEHICLES}
     emergency = False
 
@@ -275,22 +362,44 @@ def build_row(camera, location, stats, total, emergency, peak, rain):
         recommendation(total, emergency)
     )
 
+def get_project_stats():
+    reports = read_table("traffic_reports")
+    feedback = read_table("feedback")
+
+    total_reports = len(reports)
+    total_vehicles = int(reports["total"].sum()) if not reports.empty else 0
+    avg_congestion = round(reports["congestion"].mean(), 2) if not reports.empty else 0
+    total_feedback = len(feedback)
+    avg_rating = round(feedback["rating"].mean(), 1) if not feedback.empty else 0
+
+    return total_reports, total_vehicles, avg_congestion, total_feedback, avg_rating
+
+def get_vehicle_distribution():
+    df = read_table("traffic_reports")
+
+    if df.empty:
+        return pd.DataFrame({
+            "Vehicle Type": ["Cars", "Buses", "Trucks", "Motorcycles", "Bicycles"],
+            "Count": [0, 0, 0, 0, 0]
+        })
+
+    return pd.DataFrame({
+        "Vehicle Type": ["Cars", "Buses", "Trucks", "Motorcycles", "Bicycles"],
+        "Count": [
+            int(df["cars"].sum()),
+            int(df["buses"].sum()),
+            int(df["trucks"].sum()),
+            int(df["motorcycles"].sum()),
+            int(df["bicycles"].sum())
+        ]
+    })
+
 def clean_pdf_text(value, max_len=90):
     text = str(value)
-    text = text.replace("🚦", "")
-    text = text.replace("•", "-")
-    text = text.replace("✅", "")
-    text = text.replace("🚑", "")
-    text = text.replace("🤖", "")
-    text = text.replace("📋", "")
-    text = text.replace("📊", "")
+    for item in ["🚦", "•", "✅", "🚑", "🤖", "📋", "📊", "⭐", "🌍"]:
+        text = text.replace(item, "")
     text = text.replace("\n", " ")
-
-    if len(text) > max_len:
-        text = text[:max_len] + "..."
-
-    return text
-
+    return text[:max_len] + "..." if len(text) > max_len else text
 
 def create_pdf(df):
     path = "latest_traffic_report.pdf"
@@ -309,18 +418,28 @@ def create_pdf(df):
     pdf.ln()
 
     pdf.set_font("Arial", "", 9)
-
     row = df.iloc[0]
 
     for col in df.columns:
-        field = clean_pdf_text(col, 25)
-        value = clean_pdf_text(row[col], 75)
-
-        pdf.cell(60, 8, field, border=1)
-        pdf.cell(120, 8, value, border=1)
+        pdf.cell(60, 8, clean_pdf_text(col, 25), border=1)
+        pdf.cell(120, 8, clean_pdf_text(row[col], 75), border=1)
         pdf.ln()
 
     pdf.output(path)
+    return path
+
+def export_excel():
+    reports = read_table("traffic_reports")
+    feedback = read_table("feedback")
+    users = read_table("app_users")
+
+    path = "intellitraffic_full_report.xlsx"
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        reports.to_excel(writer, index=False, sheet_name="Traffic Reports")
+        feedback.to_excel(writer, index=False, sheet_name="Feedback")
+        users.to_excel(writer, index=False, sheet_name="Users")
+
     return path
 
 # ================= SIDEBAR =================
@@ -337,7 +456,11 @@ ROLE_MENUS = {
         "📡 Live RTSP/CCTV",
         "🌍 Map View",
         "📋 Reports",
-        "⭐ Feedback"
+        "⭐ Feedback",
+        "🔥 Traffic Heatmap",
+        "⚠️ Accident Detection",
+        "🔢 ANPR Records",
+        "👥 User Management"
     ],
     "Officer": [
         "📊 Dashboard",
@@ -348,16 +471,29 @@ ROLE_MENUS = {
     ],
     "Viewer": [
         "📊 Dashboard",
-        "🗺️ Map View",
+        "🌍 Map View",
         "⭐ Feedback"
     ]
 }
 
-menu = st.sidebar.radio("Navigation", ROLE_MENUS[role])
+MENU_MAP = {
+    "📊 Dashboard": "Dashboard",
+    "📷 Camera Analysis": "Camera Analysis",
+    "🎥 Multi-Camera": "Multi-Camera",
+    "📡 Live RTSP/CCTV": "Live RTSP/CCTV",
+    "🌍 Map View": "Map View",
+    "📋 Reports": "Reports",
+    "⭐ Feedback": "Feedback",
+    "🔥 Traffic Heatmap": "Traffic Heatmap",
+    "⚠️ Accident Detection": "Accident Detection",
+    "🔢 ANPR Records": "ANPR Records",
+    "👥 User Management": "User Management"
+}
 
-menu = menu.split(" ", 1)[1]
+selected_menu = st.sidebar.radio("Navigation", ROLE_MENUS[role])
+menu = MENU_MAP[selected_menu]
 
-conf = st.sidebar.slider("YOLO Confidence", 0.10, 0.90, 0.35, 0.05)
+conf = st.sidebar.slider("YOLO Confidence", 0.10, 0.90, 0.20, 0.05)
 frame_skip = st.sidebar.slider("Video Frame Skip", 1, 15, 5)
 peak_mode = st.sidebar.checkbox("Peak Hour Mode")
 rain_mode = st.sidebar.checkbox("Rain Mode")
@@ -374,6 +510,16 @@ st.write("")
 # ================= PAGES =================
 if menu == "Dashboard":
     df = read_table("traffic_reports")
+    total_reports, total_vehicles, avg_congestion, total_feedback, avg_rating = get_project_stats()
+
+    st.subheader("📊 Project Statistics")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("📋 Total Reports", total_reports)
+    a2.metric("🚗 Total Vehicles", total_vehicles)
+    a3.metric("⚠️ Avg Congestion", f"{avg_congestion}/100")
+    a4.metric("⭐ Feedback Count", total_feedback)
+
+    st.metric("⭐ Average Rating", f"{avg_rating}/5")
 
     if df.empty:
         st.info("No data yet. Start with Camera Analysis.")
@@ -381,19 +527,39 @@ if menu == "Dashboard":
         latest = df.iloc[0]
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Vehicles", int(latest["total"]))
+        c1.metric("Latest Vehicles", int(latest["total"]))
         c2.metric("Density", latest["density"])
         c3.metric("Green Time", f'{latest["green_time"]} sec')
         c4.metric("Prediction", int(latest["prediction"]))
 
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Congestion", f'{latest["congestion"]}/100')
-        c6.metric("Emergency", latest["emergency"])
-        c7.metric("Plate Demo", latest["plate"])
-        c8.metric("Reports", len(df))
-
         st.subheader("📈 Vehicle Trend")
         st.line_chart(df[["total", "prediction"]].head(20).sort_index())
+
+        st.subheader("🥧 Vehicle Distribution")
+        vehicle_dist = get_vehicle_distribution()
+        st.dataframe(vehicle_dist, use_container_width=True)
+        st.bar_chart(vehicle_dist.set_index("Vehicle Type"))
+        st.subheader("🥧 Vehicle Distribution Pie Chart")
+
+        pie_data = vehicle_dist[vehicle_dist["Count"] > 0]
+
+        if pie_data.empty:
+            st.info("Pie chart ku data illa. First traffic image/video analysis pannunga.")
+        else:
+            fig = (
+                pie_data.set_index("Vehicle Type")["Count"]
+                .plot.pie(
+                    autopct="%1.1f%%",
+                    figsize=(4,4),
+                    startangle=90,
+                    wedgeprops={"edgecolor":"white","linewidth":2},
+                    ylabel=""
+                )
+                .get_figure()
+            )
+
+            st.pyplot(fig)
+            plt.close(fig)
 
         st.subheader("Recent Reports")
         st.dataframe(df.head(10), use_container_width=True)
@@ -410,18 +576,21 @@ elif menu == "Camera Analysis":
             data = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
             frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
 
-            annotated, stats, total, emergency = analyze_frame(frame, conf)
-            row = build_row(camera, location, stats, total, emergency, peak_mode, rain_mode)
-            save_report(row)
+            if frame is None:
+                st.error("Image read panna mudiyala. Proper JPG/PNG upload pannunga.")
+            else:
+                annotated, stats, total, emergency = analyze_frame(frame, conf)
+                row = build_row(camera, location, stats, total, emergency, peak_mode, rain_mode)
+                save_report(row)
 
-            st.image(annotated, channels="BGR")
-            st.success("Analysis saved to database.")
+                st.image(annotated, channels="BGR")
+                st.success("Analysis saved to database.")
 
-            report_df = pd.DataFrame([row], columns=[
-                "created_at","camera","location","total","cars","buses","trucks","motorcycles","bicycles",
-                "density","congestion","green_time","yellow_time","red_time","prediction","emergency","plate","recommendation"
-            ])
-            st.dataframe(report_df, use_container_width=True)
+                report_df = pd.DataFrame([row], columns=[
+                    "created_at","camera","location","total","cars","buses","trucks","motorcycles","bicycles",
+                    "density","congestion","green_time","yellow_time","red_time","prediction","emergency","plate","recommendation"
+                ])
+                st.dataframe(report_df, use_container_width=True)
 
         else:
             temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -441,6 +610,7 @@ elif menu == "Camera Analysis":
                 ret, frame = cap.read()
                 if not ret:
                     break
+
                 frame_no += 1
 
                 if frame_no % frame_skip == 0:
@@ -456,7 +626,6 @@ elif menu == "Camera Analysis":
                     progress.progress(min(frame_no / total_frames, 1.0))
 
             cap.release()
-
             row = build_row(camera, location, best_stats, best_total, emergency_final, peak_mode, rain_mode)
             save_report(row)
             st.success("Video analysis saved to database.")
@@ -474,19 +643,21 @@ elif menu == "Multi-Camera":
         if file:
             data = np.asarray(bytearray(file.read()), dtype=np.uint8)
             frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            annotated, stats, total, emergency = analyze_frame(frame, conf)
-            row = build_row(name, loc, stats, total, emergency, peak_mode, rain_mode)
-            save_report(row)
 
-            st.image(annotated, channels="BGR")
-            results.append({
-                "Camera": name,
-                "Location": loc,
-                "Vehicles": total,
-                "Density": traffic_density(total),
-                "Green Time": row[11],
-                "Emergency": row[15]
-            })
+            if frame is not None:
+                annotated, stats, total, emergency = analyze_frame(frame, conf)
+                row = build_row(name, loc, stats, total, emergency, peak_mode, rain_mode)
+                save_report(row)
+
+                st.image(annotated, channels="BGR")
+                results.append({
+                    "Camera": name,
+                    "Location": loc,
+                    "Vehicles": total,
+                    "Density": traffic_density(total),
+                    "Green Time": row[11],
+                    "Emergency": row[15]
+                })
 
     if results:
         st.subheader("Multi-Camera Summary")
@@ -514,6 +685,7 @@ elif menu == "Live RTSP/CCTV":
                 ret, frame = cap.read()
                 if not ret:
                     break
+
                 frame_no += 1
 
                 if frame_no % frame_skip == 0:
@@ -531,6 +703,7 @@ elif menu == "Live RTSP/CCTV":
             st.success("RTSP analysis saved.")
 
 elif menu == "Map View":
+    st.subheader("🌍 Map View")
     lat = st.number_input("Latitude", value=11.7401)
     lon = st.number_input("Longitude", value=78.9636)
 
@@ -545,6 +718,7 @@ elif menu == "Reports":
 
     if not df.empty:
         st.download_button("Download CSV", df.to_csv(index=False), "traffic_reports.csv", "text/csv")
+
         st.download_button(
             "Download JSON",
             json.dumps(df.to_dict(orient="records"), indent=4),
@@ -555,6 +729,15 @@ elif menu == "Reports":
         pdf_path = create_pdf(df.head(1))
         with open(pdf_path, "rb") as f:
             st.download_button("Download Latest PDF", f, "traffic_report.pdf", "application/pdf")
+
+        excel_path = export_excel()
+        with open(excel_path, "rb") as f:
+            st.download_button(
+                "Download Excel Report",
+                f,
+                "intellitraffic_full_report.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 elif menu == "Feedback":
     st.subheader("⭐ Feedback & Review")
@@ -570,6 +753,145 @@ elif menu == "Feedback":
         else:
             st.error("Name and review required.")
 
-    st.subheader("Saved Reviews")
     fb = read_table("feedback")
-    st.dataframe(fb, use_container_width=True)
+
+    if not fb.empty:
+        avg_rating = round(fb["rating"].mean(), 1)
+
+        c1, c2 = st.columns(2)
+        c1.metric("⭐ Average Rating", f"{avg_rating}/5")
+        c2.metric("📝 Total Reviews", len(fb))
+
+        st.subheader("🏆 Top Reviews")
+        top_reviews = fb.sort_values(by="rating", ascending=False).head(5)
+        st.dataframe(top_reviews, use_container_width=True)
+
+        st.subheader("Saved Reviews")
+        st.dataframe(fb, use_container_width=True)
+    else:
+        st.info("No feedback yet.")
+
+elif menu == "User Management":
+    if st.session_state.role != "Admin":
+        st.error("Access denied. Admin only.")
+        st.stop()
+
+    st.subheader("👥 Admin User Management")
+
+    users_df = read_table("app_users")
+    st.dataframe(users_df, use_container_width=True)
+
+    st.subheader("Add New User")
+    new_username = st.text_input("New Username")
+    new_role = st.selectbox("Role", ["Admin", "Officer", "Viewer"])
+
+    if st.button("Add User"):
+        if new_username:
+            add_user(new_username, new_role)
+        else:
+            st.error("Username required.")
+
+    st.subheader("Update User Status")
+    if not users_df.empty:
+        selected_user = st.selectbox("Select User", users_df["username"].tolist())
+        new_status = st.selectbox("Status", ["Active", "Disabled"])
+
+        if st.button("Update Status"):
+            update_user_status(selected_user, new_status)
+
+    st.info("Note: Demo login passwords are controlled from USERS dictionary in code.")
+
+elif menu == "Traffic Heatmap":
+    st.subheader("🔥 Traffic Congestion Heatmap")
+
+    df = read_table("traffic_reports")
+
+    if df.empty:
+        st.info("No traffic data available.")
+    else:
+        heat_df = df[["camera", "location", "total", "congestion"]].head(30)
+        st.dataframe(heat_df, use_container_width=True)
+
+        pivot = heat_df.pivot_table(
+            values="congestion",
+            index="location",
+            columns="camera",
+            aggfunc="mean",
+            fill_value=0
+        )
+
+        st.subheader("Camera-wise Congestion Heatmap")
+        st.dataframe(
+            pivot.style.background_gradient(cmap="Reds"),
+            use_container_width=True
+        )
+
+        st.subheader("Congestion Ranking")
+        rank_df = heat_df.sort_values(by="congestion", ascending=False)
+        st.bar_chart(rank_df.set_index("camera")["congestion"])
+
+
+elif menu == "Accident Detection":
+    st.subheader("⚠️ Accident Risk Detection")
+
+    df = read_table("traffic_reports")
+
+    if df.empty:
+        st.info("No traffic data available.")
+    else:
+        latest = df.iloc[0]
+
+        risk_score = 0
+
+        if int(latest["total"]) > 35:
+            risk_score += 40
+
+        if int(latest["congestion"]) > 70:
+            risk_score += 35
+
+        if latest["emergency"] == "Yes":
+            risk_score += 25
+
+        risk_score = min(risk_score, 100)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("🚗 Vehicle Count", int(latest["total"]))
+        c2.metric("⚠️ Congestion", f'{latest["congestion"]}/100')
+        c3.metric("🛡️ Accident Risk", f"{risk_score}%")
+
+        if risk_score >= 75:
+            st.error("🚨 High Accident Risk Detected")
+            st.write("Action: Reduce vehicle flow, increase signal control, alert operator.")
+        elif risk_score >= 45:
+            st.warning("⚠️ Medium Accident Risk")
+            st.write("Action: Monitor camera feed and optimize signal timing.")
+        else:
+            st.success("✅ Low Accident Risk")
+            st.write("Action: Normal monitoring is enough.")
+
+        st.subheader("Risk Reasoning")
+        st.write(f"Latest Camera: {latest['camera']}")
+        st.write(f"Location: {latest['location']}")
+        st.write(f"Emergency Status: {latest['emergency']}")
+        st.write(f"AI Recommendation: {latest['recommendation']}")
+
+
+elif menu == "ANPR Records":
+    st.subheader("🔢 ANPR Number Plate Records")
+
+    df = read_table("traffic_reports")
+
+    if df.empty:
+        st.info("No ANPR records available.")
+    else:
+        anpr_df = df[["created_at", "camera", "location", "plate", "total", "density"]]
+        st.dataframe(anpr_df, use_container_width=True)
+
+        st.download_button(
+            "Download ANPR CSV",
+            anpr_df.to_csv(index=False),
+            "anpr_records.csv",
+            "text/csv"
+        )
+
+        st.info("Note: This is demo ANPR. Real ANPR needs EasyOCR/custom number plate model.")
