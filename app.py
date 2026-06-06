@@ -335,7 +335,7 @@ ROLE_MENUS = {
         "📷 Camera Analysis",
         "🎥 Multi-Camera",
         "📡 Live RTSP/CCTV",
-        "🗺️ Map View",
+        "🌍 Map View",
         "📋 Reports",
         "⭐ Feedback"
     ],
